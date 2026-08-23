@@ -4,6 +4,6 @@ RANSliceOpt AI development.
 
 ## Browser application
 
-[Launch RANsliceOpt AI v15.1](https://htmlpreview.github.io/?https://github.com/ysrao/DigitalTwin-RANSliceAI/blob/main/RANsliceOpt_AI_PPO_MDP_v15_1.html)
+[Launch RANsliceOpt AI v15.2](https://ysrao.github.io/DigitalTwin-RANSliceAI/)
 
-The browser-preview link runs the self-contained HTML artifact directly from the version stored in this repository.
+The existing GitHub Pages URL serves v15.2. The v15.1 artifact remains in the repository for reproducibility.
