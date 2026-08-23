@@ -100,6 +100,9 @@ hr{border:none;border-top:1px solid var(--line);margin:14px 0}
   font-size:11px;
   text-align:center;
 }
+.hidden{display:none!important}
+.config-summary{margin-bottom:14px;padding:10px 12px;border-color:#315b7e}
+.config-summary strong{color:#eaf2ff}
 
 </style>
 </head>
@@ -116,6 +119,19 @@ hr{border:none;border-top:1px solid var(--line);margin:14px 0}
     <div class="row"><label>Total PRBs</label><input id="prbs" type="number" value="273" min="50" max="1000"></div>
     <div class="row"><label>Simulation steps</label><input id="steps" type="number" value="120" min="10" max="1000"></div>
     <div class="row"><label>Decision interval (ms)</label><input id="interval" type="number" value="10" min="1" max="1000"></div>
+    <hr>
+    <h2>eMBB Radio Configuration</h2>
+    <div class="row"><label>Carrier aggregation mode</label><select id="embCaMode"><option value="TDD">TDD CA</option><option value="FDD">FDD CA</option><option value="FDD_TDD" selected>FDD + TDD CA</option></select></div>
+    <div class="row" id="embFddCarriersRow"><label>FDD component carriers</label><input id="embFddCarriers" type="number" value="1" min="1" max="8" step="1"></div>
+    <div class="row" id="embTddCarriersRow"><label>TDD component carriers</label><input id="embTddCarriers" type="number" value="1" min="1" max="8" step="1"></div>
+    <div class="small" id="embCaHint">eMBB aggregates 2 component carriers across FDD and TDD spectrum.</div>
+    <hr>
+    <h2>URLLC / eMTC Radio Configuration</h2>
+    <div class="row"><label>URLLC carriers</label><input value="Single carrier" readonly aria-label="URLLC carrier configuration"></div>
+    <div class="row"><label>URLLC slow mobility (%)</label><input id="urllcSlowMobility" type="number" value="30" min="0" max="100" step="1"></div>
+    <div class="row"><label>eMTC carriers</label><input value="Single carrier" readonly aria-label="eMTC carrier configuration"></div>
+    <div class="row"><label>eMTC slow mobility (%)</label><input id="emtcSlowMobility" type="number" value="80" min="0" max="100" step="1"></div>
+    <div class="small">URLLC and eMTC remain single-carrier slices; carrier aggregation applies only to eMBB.</div>
     <hr>
     <h2>Slice Demand</h2>
     <div class="row"><label>eMBB load</label><div class="range-wrap"><input id="loadEmb" type="range" min="0.2" max="1.5" value="0.9" step="0.05"><div class="range-scale"><span>0.20</span><span class="cur" id="loadEmbVal">0.90</span><span class="max">1.50</span></div></div></div>
@@ -145,6 +161,8 @@ hr{border:none;border-top:1px solid var(--line);margin:14px 0}
   </aside>
 
   <main id="outputArea">
+    <div class="status config-summary"><strong>eMBB radio:</strong> <span id="embCaSummary">FDD + TDD CA (1 FDD + 1 TDD carrier; 2 CC total)</span></div>
+    <div class="status config-summary"><strong>URLLC / eMTC radio:</strong> <span id="singleCarrierSummary">URLLC single carrier · 30% slow mobility; eMTC single carrier · 80% slow mobility</span></div>
     <div class="cards">
       <div class="card"><div class="k">Reward</div><div class="v" id="reward">0.000</div></div>
       <div class="card"><div class="k">URLLC Latency</div><div class="v" id="lat">—</div></div>
@@ -338,6 +356,13 @@ function snapshotConfig(){
     loadEmb:parseFloat($("loadEmb").value),
     loadUrl:parseFloat($("loadUrl").value),
     loadIot:parseFloat($("loadIot").value),
+    embCaMode:$("embCaMode").value,
+    embFddCarriers:parseInt($("embFddCarriers").value),
+    embTddCarriers:parseInt($("embTddCarriers").value),
+    urllcCarriers:1,
+    urllcSlowMobility:parseFloat($("urllcSlowMobility").value),
+    emtcCarriers:1,
+    emtcSlowMobility:parseFloat($("emtcSlowMobility").value),
     latTarget:parseFloat($("latTarget").value),
     urlMin:parseFloat($("urlMin").value)/100,
     embMin:parseFloat($("embMin").value),
@@ -347,6 +372,37 @@ function snapshotConfig(){
     lr:parseFloat($("lr").value),
     temp:parseFloat($("temp").value)
   };
+}
+
+function refreshEmbCaConfig(){
+  const mode=$("embCaMode").value;
+  const fdd=Math.max(1,parseInt($("embFddCarriers").value)||1);
+  const tdd=Math.max(1,parseInt($("embTddCarriers").value)||1);
+  $("embFddCarriers").value=fdd;
+  $("embTddCarriers").value=tdd;
+  $("embFddCarriersRow").classList.toggle("hidden",mode==="TDD");
+  $("embTddCarriersRow").classList.toggle("hidden",mode==="FDD");
+  const total=mode==="FDD"?fdd:mode==="TDD"?tdd:fdd+tdd;
+  const label=mode==="FDD"?`FDD CA (${fdd} FDD carrier${fdd===1?"":"s"}; ${total} CC total)`:
+    mode==="TDD"?`TDD CA (${tdd} TDD carrier${tdd===1?"":"s"}; ${total} CC total)`:
+    `FDD + TDD CA (${fdd} FDD + ${tdd} TDD carrier${tdd===1?"":"s"}; ${total} CC total)`;
+  $("embCaHint").textContent=mode==="FDD_TDD"?
+    `eMBB aggregates ${total} component carriers across FDD and TDD spectrum.`:
+    `eMBB aggregates ${total} component carrier${total===1?"":"s"} in ${mode} spectrum.`;
+  $("embCaSummary").textContent=label;
+}
+
+function refreshSingleCarrierConfig(){
+  const clampPercent=id=>{
+    const input=$(id);
+    const value=clamp(parseFloat(input.value)||0,0,100);
+    input.value=value;
+    return value;
+  };
+  const urllcMobility=clampPercent("urllcSlowMobility");
+  const emtcMobility=clampPercent("emtcSlowMobility");
+  $("singleCarrierSummary").textContent=
+    `URLLC single carrier · ${urllcMobility}% slow mobility; eMTC single carrier · ${emtcMobility}% slow mobility`;
 }
 function loadAt(k,cfg,rnd){
   let wave=Math.sin(k/9)*0.08;
@@ -893,7 +949,7 @@ $("reset").onclick=resetAll;
 
 // Mark previous outputs stale whenever any configuration control changes.
 [
-  "bw","prbs","steps","interval","loadEmb","loadUrl","loadIot",
+  "bw","prbs","steps","interval","embCaMode","embFddCarriers","embTddCarriers","urllcSlowMobility","emtcSlowMobility","loadEmb","loadUrl","loadIot",
   "latTarget","urlMin","embMin","iotMin","gamma","clip","lr","temp"
 ].forEach(id=>{
   const el=$(id);
@@ -901,6 +957,18 @@ $("reset").onclick=resetAll;
   el.addEventListener("input", markOutputsStale);
   el.addEventListener("change", markOutputsStale);
 });
+
+["embCaMode","embFddCarriers","embTddCarriers"].forEach(id=>{
+  $(id).addEventListener("input",refreshEmbCaConfig);
+  $(id).addEventListener("change",refreshEmbCaConfig);
+});
+refreshEmbCaConfig();
+
+["urllcSlowMobility","emtcSlowMobility"].forEach(id=>{
+  $(id).addEventListener("input",refreshSingleCarrierConfig);
+  $(id).addEventListener("change",refreshSingleCarrierConfig);
+});
+refreshSingleCarrierConfig();
 
 initial();
 
