@@ -124,14 +124,24 @@ hr{border:none;border-top:1px solid var(--line);margin:14px 0}
     <div class="row"><label>Carrier aggregation mode</label><select id="embCaMode"><option value="TDD">TDD CA</option><option value="FDD">FDD CA</option><option value="FDD_TDD" selected>FDD + TDD CA</option></select></div>
     <div class="row" id="embFddCarriersRow"><label>FDD component carriers</label><input id="embFddCarriers" type="number" value="1" min="1" max="8" step="1"></div>
     <div class="row" id="embTddCarriersRow"><label>TDD component carriers</label><input id="embTddCarriers" type="number" value="1" min="1" max="8" step="1"></div>
+    <div class="row"><label>eMBB channel model</label><select id="embChannelModel"><option value="UMa" selected>UMa</option><option value="UMi">UMi</option><option value="RMa">RMa</option></select></div>
+    <div class="row"><label>eMBB carrier frequency (GHz)</label><input id="embFrequency" type="number" value="3.5" min="0.1" max="100" step="0.1"></div>
+    <div class="row"><label>eMBB representative distance (m)</label><input id="embDistance" type="number" value="200" min="1" max="10000" step="1"></div>
+    <div class="row"><label>eMBB slow mobility (%)</label><input id="embSlowMobility" type="number" value="20" min="0" max="100" step="1"></div>
     <div class="small" id="embCaHint">eMBB aggregates 2 component carriers across FDD and TDD spectrum.</div>
     <hr>
     <h2>URLLC / eMTC Radio Configuration</h2>
     <div class="row"><label>URLLC carriers</label><input value="Single carrier" readonly aria-label="URLLC carrier configuration"></div>
+    <div class="row"><label>URLLC channel model</label><select id="urllcChannelModel"><option value="UMa">UMa</option><option value="UMi" selected>UMi</option><option value="RMa">RMa</option></select></div>
+    <div class="row"><label>URLLC carrier frequency (GHz)</label><input id="urllcFrequency" type="number" value="3.5" min="0.1" max="100" step="0.1"></div>
+    <div class="row"><label>URLLC representative distance (m)</label><input id="urllcDistance" type="number" value="100" min="1" max="10000" step="1"></div>
     <div class="row"><label>URLLC slow mobility (%)</label><input id="urllcSlowMobility" type="number" value="30" min="0" max="100" step="1"></div>
     <div class="row"><label>eMTC carriers</label><input value="Single carrier" readonly aria-label="eMTC carrier configuration"></div>
+    <div class="row"><label>eMTC channel model</label><select id="emtcChannelModel"><option value="UMa">UMa</option><option value="UMi">UMi</option><option value="RMa" selected>RMa</option></select></div>
+    <div class="row"><label>eMTC carrier frequency (GHz)</label><input id="emtcFrequency" type="number" value="0.7" min="0.1" max="100" step="0.1"></div>
+    <div class="row"><label>eMTC representative distance (m)</label><input id="emtcDistance" type="number" value="500" min="1" max="10000" step="1"></div>
     <div class="row"><label>eMTC slow mobility (%)</label><input id="emtcSlowMobility" type="number" value="80" min="0" max="100" step="1"></div>
-    <div class="small">URLLC and eMTC remain single-carrier slices; carrier aggregation applies only to eMBB.</div>
+    <div class="small">URLLC and eMTC remain single-carrier slices; carrier aggregation applies only to eMBB. Path loss uses a transparent log-distance abstraction plus a mobility margin and is reported in the trace.</div>
     <hr>
     <h2>Slice Demand</h2>
     <div class="row"><label>eMBB load</label><div class="range-wrap"><input id="loadEmb" type="range" min="0.2" max="1.5" value="0.9" step="0.05"><div class="range-scale"><span>0.20</span><span class="cur" id="loadEmbVal">0.90</span><span class="max">1.50</span></div></div></div>
@@ -332,8 +342,33 @@ function enforceShares(s,cfg){
   }
   return normalizeShares(x);
 }
-function metrics(ld,sh){
-  const embCap=sh[0]*1.55,urlCap=sh[1]*1.2,iotCap=sh[2]*1.8;
+const CHANNEL_MODELS={
+  UMi:{exponent:3.0,mobilityMarginDb:3.0},
+  UMa:{exponent:3.4,mobilityMarginDb:3.5},
+  RMa:{exponent:2.7,mobilityMarginDb:2.0}
+};
+function slicePathLoss(model,frequencyGhz,distanceM,slowMobilityPct){
+  const p=CHANNEL_MODELS[model]||CHANNEL_MODELS.UMa;
+  const baseDb=32.4+20*Math.log10(Math.max(0.1,frequencyGhz))+10*p.exponent*Math.log10(Math.max(1,distanceM));
+  const fastShare=1-clamp(slowMobilityPct,0,100)/100;
+  const mobilityMarginDb=fastShare*p.mobilityMarginDb;
+  return {model,frequencyGhz,distanceM,slowMobilityPct,baseDb,mobilityMarginDb,totalDb:baseDb+mobilityMarginDb};
+}
+function channelEstimates(cfg){
+  return {
+    emb:slicePathLoss(cfg.embChannelModel,cfg.embFrequency,cfg.embDistance,cfg.embSlowMobility),
+    urllc:slicePathLoss(cfg.urllcChannelModel,cfg.urllcFrequency,cfg.urllcDistance,cfg.urllcSlowMobility),
+    emtc:slicePathLoss(cfg.emtcChannelModel,cfg.emtcFrequency,cfg.emtcDistance,cfg.emtcSlowMobility)
+  };
+}
+function pathLossCapacityFactor(pathLossDb){
+  return clamp(Math.pow(10,-(pathLossDb-105)/40),0.55,1.20);
+}
+function metrics(ld,sh,cfg){
+  const ch=channelEstimates(cfg);
+  const embCap=sh[0]*1.55*pathLossCapacityFactor(ch.emb.totalDb);
+  const urlCap=sh[1]*1.2*pathLossCapacityFactor(ch.urllc.totalDb);
+  const iotCap=sh[2]*1.8*pathLossCapacityFactor(ch.emtc.totalDb);
   const emb=clamp(embCap/(ld[0]+0.22),0,1.25);
   const lat=0.65+3.4*Math.pow(ld[1]/(urlCap+0.12),1.35);
   const iotSrv=clamp(iotCap/(ld[2]+0.12),0,1.1);
@@ -359,9 +394,19 @@ function snapshotConfig(){
     embCaMode:$("embCaMode").value,
     embFddCarriers:parseInt($("embFddCarriers").value),
     embTddCarriers:parseInt($("embTddCarriers").value),
+    embChannelModel:$("embChannelModel").value,
+    embFrequency:parseFloat($("embFrequency").value),
+    embDistance:parseFloat($("embDistance").value),
+    embSlowMobility:parseFloat($("embSlowMobility").value),
     urllcCarriers:1,
+    urllcChannelModel:$("urllcChannelModel").value,
+    urllcFrequency:parseFloat($("urllcFrequency").value),
+    urllcDistance:parseFloat($("urllcDistance").value),
     urllcSlowMobility:parseFloat($("urllcSlowMobility").value),
     emtcCarriers:1,
+    emtcChannelModel:$("emtcChannelModel").value,
+    emtcFrequency:parseFloat($("emtcFrequency").value),
+    emtcDistance:parseFloat($("emtcDistance").value),
     emtcSlowMobility:parseFloat($("emtcSlowMobility").value),
     latTarget:parseFloat($("latTarget").value),
     urlMin:parseFloat($("urlMin").value)/100,
@@ -500,10 +545,10 @@ function criticUpdate(net,state,target,cfg){
 function collectRollout(actor,critic,cfg,seed,len){
   let rnd=seededNoise(seed),sh=[0.55,0.25,0.20],roll=[];
   for(let k=0;k<len;k++){
-    const ld=loadAt(k,cfg,rnd),m=metrics(ld,sh),st=stateVector(ld,m);
+    const ld=loadAt(k,cfg,rnd),m=metrics(ld,sh,cfg),st=stateVector(ld,m);
     const af=actorForward(actor,st,cfg.temp),a=sampleProb(af.probs,rnd),oldProb=af.probs[a];
     const ns=enforceShares(sh.map((v,i)=>v+actions[a].d[i]),cfg);
-    const m2=metrics(ld,ns),r=rewardFnCfg(m2,cfg),st2=stateVector(ld,m2);
+    const m2=metrics(ld,ns,cfg),r=rewardFnCfg(m2,cfg),st2=stateVector(ld,m2);
     roll.push({state:st,action:a,oldProb,reward:r,nextState:st2});
     sh=ns;
   }
@@ -548,12 +593,12 @@ function trainPPO(cfg){
 function evaluateBaseline(cfg,seed){
   let rnd=seededNoise(seed),sh=[0.55,0.25,0.20],out=[],changes=0,lastA=0;
   for(let k=0;k<cfg.steps;k++){
-    const ld=loadAt(k,cfg,rnd),before=metrics(ld,sh);
+    const ld=loadAt(k,cfg,rnd),before=metrics(ld,sh,cfg);
     let a=0;
     if(before.lat>cfg.latTarget)a=1;
     else if(before.iotSrv<cfg.iotMin)a=2;
     else if(before.emb<cfg.embMin)a=4;
-    const ns=enforceShares(sh.map((v,i)=>v+actions[a].d[i]),cfg),after=metrics(ld,ns),r=rewardFnCfg(after,cfg);
+    const ns=enforceShares(sh.map((v,i)=>v+actions[a].d[i]),cfg),after=metrics(ld,ns,cfg),r=rewardFnCfg(after,cfg);
     if(k&&a!==lastA)changes++;lastA=a;sh=ns;
     out.push({t:k+1,r,lat:after.lat,emb:after.emb,iot:after.iotSrv,fair:after.fair,eff:after.eff,shares:[...sh],action:a,ld:[...ld]});
   }
@@ -562,10 +607,10 @@ function evaluateBaseline(cfg,seed){
 function evaluatePPO(actor,cfg,seed){
   let rnd=seededNoise(seed),sh=[0.55,0.25,0.20],out=[],changes=0,lastA=0;
   for(let k=0;k<cfg.steps;k++){
-    const ld=loadAt(k,cfg,rnd),before=metrics(ld,sh),st=stateVector(ld,before);
+    const ld=loadAt(k,cfg,rnd),before=metrics(ld,sh,cfg),st=stateVector(ld,before);
     const probs=actorForward(actor,st,Math.max(0.25,cfg.temp*0.55)).probs;
     const a=argmax(probs); // deterministic evaluation after stochastic PPO training
-    const ns=enforceShares(sh.map((v,i)=>v+actions[a].d[i]),cfg),after=metrics(ld,ns),r=rewardFnCfg(after,cfg);
+    const ns=enforceShares(sh.map((v,i)=>v+actions[a].d[i]),cfg),after=metrics(ld,ns,cfg),r=rewardFnCfg(after,cfg);
     if(k&&a!==lastA)changes++;lastA=a;sh=ns;
     out.push({t:k+1,r,lat:after.lat,emb:after.emb,iot:after.iotSrv,fair:after.fair,eff:after.eff,shares:[...sh],action:a,ld:[...ld]});
   }
@@ -757,8 +802,13 @@ function renderDiag(d,b,p){
   $("diagBaseActs").textContent=b.actionChanges;
   $("diagPpoActs").textContent=p.actionChanges;
 }
-function appendLog(series,label){
-  $("log").textContent="";
+function channelTrace(cfg){
+  const c=channelEstimates(cfg);
+  const line=(name,x)=>`${name}: model=${x.model}, f=${x.frequencyGhz.toFixed(2)}GHz, d=${x.distanceM.toFixed(0)}m, slow=${x.slowMobilityPct.toFixed(0)}%, basePL=${x.baseDb.toFixed(2)}dB, mobilityMargin=${x.mobilityMarginDb.toFixed(2)}dB, totalPL=${x.totalDb.toFixed(2)}dB, capacityFactor=${pathLossCapacityFactor(x.totalDb).toFixed(3)}`;
+  return `[CHANNEL/PATHLOSS]\n${line("eMBB",c.emb)}\n${line("URLLC",c.urllc)}\n${line("eMTC",c.emtc)}\n`;
+}
+function appendLog(series,label,cfg){
+  $("log").textContent=channelTrace(cfg)+"\n";
   series.forEach(pt=>{
     $("log").textContent+=`t=${pt.t.toString().padStart(3)} | ${label.padEnd(8)} | ${actions[pt.action].name.padEnd(28)} | shares=${pt.shares.map(v=>(100*v).toFixed(0)+"%").join("/")} | lat=${pt.lat.toFixed(2)}ms | eMBB=${pt.emb.toFixed(2)} | R=${pt.r.toFixed(3)}
 `;
@@ -777,7 +827,7 @@ function runPPO(){
   comparison.ppo=evaluatePPO(trained.actor,cfg,24680);
   kpiHistory=comparison.ppo.map(x=>({...x}));
   t=kpiHistory.length;
-  renderPoint(kpiHistory[kpiHistory.length-1]);drawHistory();renderComparison();renderDiag(trained.diag,comparison.baseline,comparison.ppo);appendLog(kpiHistory,"PPO");
+  renderPoint(kpiHistory[kpiHistory.length-1]);drawHistory();renderComparison();renderDiag(trained.diag,comparison.baseline,comparison.ppo);appendLog(kpiHistory,"PPO",cfg);
   $("status").textContent=`PPO training complete. ${trained.diag.updates} actor/critic sample updates; evaluation uses the same traffic seed as baseline.`;
 }
 function runBaseline(){
@@ -813,7 +863,7 @@ function runBaseline(){
   $("diagCritic").textContent="N/A";
   $("diagBaseActs").textContent=comparison.baseline.actionChanges;
   $("diagPpoActs").textContent=liveActor && comparison.ppo.length ? comparison.ppo.actionChanges+" (stored PPO)" : "N/A";
-  appendLog(kpiHistory,"RULE");
+  appendLog(kpiHistory,"RULE",cfg);
 }
 function runSingleStep(){
   clearStaleState();
@@ -839,14 +889,14 @@ function runSingleStep(){
   const ld=loadAt(t,cfg,liveRnd);
 
   // ---- PPO branch ----
-  const before=metrics(ld,shares);
+  const before=metrics(ld,shares,cfg);
   const st=stateVector(ld,before);
   const af=actorForward(liveActor,st,cfg.temp);
   const a=sampleProb(af.probs,liveRnd);
   const oldProb=af.probs[a];
 
   const ns=enforceShares(shares.map((v,i)=>v+actions[a].d[i]),cfg);
-  const after=metrics(ld,ns);
+  const after=metrics(ld,ns,cfg);
   const rwd=rewardFnCfg(after,cfg);
   const st2=stateVector(ld,after);
 
@@ -872,14 +922,14 @@ function runSingleStep(){
   if(kpiHistory.length>180) kpiHistory.shift();
 
   // ---- Matched rule-based branch using the SAME traffic state ----
-  const bBefore=metrics(ld,liveBaselineShares);
+  const bBefore=metrics(ld,liveBaselineShares,cfg);
   let ba=0;
   if(bBefore.lat>cfg.latTarget) ba=1;
   else if(bBefore.iotSrv<cfg.iotMin) ba=2;
   else if(bBefore.emb<cfg.embMin) ba=4;
 
   const bns=enforceShares(liveBaselineShares.map((v,i)=>v+actions[ba].d[i]),cfg);
-  const bAfter=metrics(ld,bns);
+  const bAfter=metrics(ld,bns,cfg);
   const br=rewardFnCfg(bAfter,cfg);
   liveBaselineShares=bns;
   const bpt={
@@ -920,6 +970,7 @@ function runSingleStep(){
 
   // Append a compact live trace for both policies.
   $("log").textContent +=
+    channelTrace(cfg) +
     `t=${t.toString().padStart(3)} | PPO  | ${actions[a].name.padEnd(28)} | shares=${shares.map(v=>(100*v).toFixed(0)+"%").join("/")} | lat=${after.lat.toFixed(2)}ms | eMBB=${after.emb.toFixed(2)} | mIoT=${after.iotSrv.toFixed(2)} | R=${rwd.toFixed(3)}\n` +
     `t=${t.toString().padStart(3)} | RULE | ${actions[ba].name.padEnd(28)} | shares=${liveBaselineShares.map(v=>(100*v).toFixed(0)+"%").join("/")} | lat=${bAfter.lat.toFixed(2)}ms | eMBB=${bAfter.emb.toFixed(2)} | mIoT=${bAfter.iotSrv.toFixed(2)} | R=${br.toFixed(3)}\n`;
 
@@ -938,7 +989,7 @@ function resetAll(){
   initial();
 }
 function initial(){
-  const cfg=snapshotConfig(),ld=[cfg.loadEmb,cfg.loadUrl,cfg.loadIot],m=metrics(ld,shares),r=rewardFnCfg(m,cfg);
+  const cfg=snapshotConfig(),ld=[cfg.loadEmb,cfg.loadUrl,cfg.loadIot],m=metrics(ld,shares,cfg),r=rewardFnCfg(m,cfg);
   const pt={t:0,r,lat:m.lat,emb:m.emb,iot:m.iotSrv,fair:m.fair,eff:m.eff,shares:[...shares],action:0,ld};
   renderPoint(pt);
 }
@@ -949,7 +1000,7 @@ $("reset").onclick=resetAll;
 
 // Mark previous outputs stale whenever any configuration control changes.
 [
-  "bw","prbs","steps","interval","embCaMode","embFddCarriers","embTddCarriers","urllcSlowMobility","emtcSlowMobility","loadEmb","loadUrl","loadIot",
+  "bw","prbs","steps","interval","embCaMode","embFddCarriers","embTddCarriers","embChannelModel","embFrequency","embDistance","embSlowMobility","urllcChannelModel","urllcFrequency","urllcDistance","urllcSlowMobility","emtcChannelModel","emtcFrequency","emtcDistance","emtcSlowMobility","loadEmb","loadUrl","loadIot",
   "latTarget","urlMin","embMin","iotMin","gamma","clip","lr","temp"
 ].forEach(id=>{
   const el=$(id);
@@ -964,7 +1015,7 @@ $("reset").onclick=resetAll;
 });
 refreshEmbCaConfig();
 
-["urllcSlowMobility","emtcSlowMobility"].forEach(id=>{
+["embSlowMobility","urllcSlowMobility","emtcSlowMobility"].forEach(id=>{
   $(id).addEventListener("input",refreshSingleCarrierConfig);
   $(id).addEventListener("change",refreshSingleCarrierConfig);
 });
